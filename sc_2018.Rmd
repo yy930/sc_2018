@@ -1,0 +1,711 @@
+---
+title: "sc_2018"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+#knitr::opts_chunk$set(echo = TRUE)
+library(ggplot2)
+library(scater)
+library(stringr)
+library(scran)
+library(readxl)
+options(stringsAsFactors = FALSE)
+```
+
+## load data
+```{r load.data}
+allcount <- read.delim("~/Documents/sc_2018/allcount.txt",header=T,sep="\t",
+                        row.names=1,check.names=FALSE)
+allcount[which(is.na(allcount), arr.ind = T)]<-0
+alltpm <- read.delim("~/Documents/sc_2018/alltpm.txt",header=T,sep="\t",
+                      row.names=1,check.names=FALSE)
+
+allcount<-data.matrix(allcount)
+alltpm<-data.matrix(alltpm)
+#celltype<-read.delim("~/Documents/sc_2018/celltype_2018all.txt",header=T,sep="\t",
+#                     check.names=FALSE)
+celltype<-read.delim("~/Documents/sc_2018/celltype_clean_clonetype.txt",header=T,sep="\t",
+                     check.names=FALSE)
+celltype$cell_type[is.na(celltype$cell_type)]='N'
+# celltype$cell_specificity[which(celltype$cell_specificity=="B-TG2+")]<-"TG2+PC"
+# celltype$cell_specificity[which(celltype$cell_specificity=="B-CD27+ IgA+")]<-"TG2-PC"
+# celltype$cell_type[celltype$cell_type=="B"]<-"P"
+# celltype$cell_specificity[celltype$cell_specificity=="T-Non-specific"]<-"Tet-T"
+# celltype$cell_specificity[celltype$cell_specificity=="T-Specific"]<-"Tet+T"
+
+gene_biotype <- read.delim("/Users/yingy_adm/Documents/sc_2017/agg_gene_biotype.txt",
+                           header=T,sep = "\t",row.names=1)
+allmapping<-read.delim(file="~/Documents/sc_2018/allmapping.txt",header = T, 
+                       sep = "\t",row.names=1,check.names=FALSE)
+```
+
+#add clone labels to celltype for TSNE plot
+```{r add labels to celltype}
+celltype<-read.delim("~/Documents/sc_2018/celltype.txt",header=T,sep="\t",
+                     check.names=FALSE)
+clone_freq<-as.data.frame(table(celltype$clonetype[!scdata$drop]))
+clone_freq<-clone_freq[clone_freq$Freq>1,]
+for (i in 1:(dim(clone_freq)[1]-2))
+  {
+  label=as.character(clone_freq$Var1[i])
+  celltype$label=rep("unknown",672)
+  celltype$label[celltype$clonetype==label]<-label
+  names(celltype)[names(celltype) == "label"]<-label
+}
+
+```
+
+
+## Plot mapping info
+```{r pressure, echo=FALSE}
+source('~/Documents/sc_2017/SC_functions.R')
+library(reshape2)
+par(mfrow=c(4,3))
+plot_mapinfo(mapping=allmapping[1:96,])
+plot_mapinfo(mapping=allmapping[97:192,])
+plot_mapinfo(mapping=allmapping[193:288,])
+plot_mapinfo(mapping=allmapping[289:384,])
+plot_mapinfo(mapping=allmapping[385:480,])
+plot_mapinfo(mapping=allmapping[481:576,])
+plot_mapinfo(mapping=allmapping[577:672,])
+plot_mapinfo(mapping=allmapping[673:768,])
+plot_mapinfo(mapping=allmapping[769:864,])
+plot_mapinfo(mapping=allmapping[865:960,])
+plot_mapinfo(mapping=allmapping[961:1056,])
+```
+
+#creat SingleCellExperiment object
+```{r creat SingleCellExperiment object}
+scdata <- SingleCellExperiment(
+  assays = list(counts = allcount), colData = celltype,rowData = gene_biotype)
+assay(scdata, "logcounts_raw") <- log2(counts(scdata) + 1)
+assay(scdata, "tpm") <- alltpm
+
+#get index and list of IG,TR,MT,ERCC gene
+#ig_gene<-grepl("^IG_[VDCJ]_gene", gene_biotype$biotype, perl=TRUE)#a vector of 652 gene ID #217
+#tr_gene<-grepl("^TR_[VDCJ]_gene", gene_biotype$biotype, perl=TRUE)#a vector of 314 gene ID #202
+ig_gene<-grepl("^IG_", gene_biotype$biotype, perl=TRUE)#a vector of 425 gene ID 
+tr_gene<-grepl("^TR_", gene_biotype$biotype, perl=TRUE)#a vector of 237 gene ID
+mt_gene<-grepl("^MT-", rownames(gene_biotype), perl=TRUE) &
+  (gene_biotype$biotype=="protein_coding")#a vector of 13 gene ID
+spike<-grepl("^ERCC-", rownames(allcount))
+isSpike(scdata, type="ERCC")<-grepl("^ERCC-", rownames(allcount))
+
+scdata <- calculateQCMetrics(scdata,
+                             feature_controls = list(ERCC = isSpike(scdata, type="ERCC"),
+                             MT = mt_gene, IG = ig_gene, TR = tr_gene))
+```
+
+#plot for Quality Control
+```{r plot for Quality Control}
+par(mfrow=c(3,2), mar=c(5.1, 4.1, 0.1, 0.1))
+hist(scdata$total_counts/1e6, xlab="Library sizes (millions)", main="", 
+     breaks=100, col="grey80", ylab="Number of cells")
+abline(v=0.2,col="red")
+hist(scdata$total_features, xlab="Number of expressed genes", main="", 
+     breaks=100, col="grey80", ylab="Number of cells")
+abline(v=1800,col="red")
+abline(v=15000,col="red")
+hist(scdata$pct_counts_ERCC, xlab="ERCC proportion (%)", 
+     ylab="Number of cells", breaks=100, main="", col="grey80")
+abline(v=40,col="red")
+hist(scdata$pct_counts_MT, xlab="Mitochondrial proportion (%)", 
+     ylab="Number of cells", breaks=100, main="", col="grey80")
+abline(v=15,col="red")
+#hist(allmapping$mappednum,xlab="Number of mapped reads", 
+#     ylab="Number of cells", breaks=50, main="", col="grey80")
+hist(allmapping$percent,xlab="mapping rate(%)", 
+     ylab="Number of cells", breaks=100, main="", col="grey80")
+abline(v=30,col="red")
+
+ave.counts <- calcAverage(scdata)
+hist(log10(ave.counts), breaks=100, main="", col="grey80", 
+     xlab=expression(Log[10]~"average count"))
+
+#ave.counts <- calcAverage(QC)
+#hist(log10(ave.counts), breaks=100, main="", col="grey80", 
+#     xlab=expression(Log[10]~"average count"))
+
+#num.cells <- nexprs(QC, byrow=TRUE)
+#smoothScatter(log10(ave.counts), num.cells, ylab="Number of cells", 
+#              xlab=expression(Log[10]~"average count"))
+```
+
+```{r Quality Control}
+drop.pct.mapped<-(allmapping$percent<30)
+drop.n.reads<-(scdata$total_counts<200000)
+drop.n.genes<-(scdata$total_features<1800|scdata$total_features>15000)
+scdata$pct_counts_MT[943]<-0
+drop.pct.mt<-(scdata$pct_counts_MT>15)
+scdata$pct_counts_ERCC[943]<-0
+drop.pct.ercc<-(scdata$pct_counts_ERCC>40)
+drop.control<-celltype$cell_type=="0"|celltype$cell_type=="50"
+drop.contamination<-grepl("2-3C.*",celltype$well)|grepl("2-3[A-Z]3",celltype$well)
+
+scdata$drop <- (drop.pct.mapped | drop.n.reads | drop.n.genes | drop.pct.mt | drop.pct.ercc|drop.control|drop.contamination)
+#scdata$clone_drop <-celltype[,10]=="N"|celltype[,10]=="S"|scdata$drop=="TRUE"
+#scdata <- scdata[,!scdata$drop]
+```
+#assign cell cycle
+```{r assign cell cycle using scran}
+counts=counts(scdata)
+rownames(counts)<-gene_biotype[rownames(counts),"gene_id"]
+sce <- SingleCellExperiment(list(counts=counts))
+mm.pairs <- readRDS(system.file("exdata", "human_cycle_markers.rds", package="scran"))
+assigned <- cyclone(sce, pairs=mm.pairs)
+head(assigned$scores)
+table(assigned$phases)
+table(assigned$phases,scdata$cell_specificity)
+
+# Visualizing
+cc<-c("red","blue","green")
+phase <- rep("G1",1056)
+phase[assigned$phases=='G2M'] <- "G2M"
+phase[assigned$phases=='S'] <- "S"
+plot(assigned$score$G1, assigned$score$G2M, col=as.numeric(as.factor(phase)), pch=16)
+legend("topright", legend=levels(as.factor(phase)), fill=cc, cex=0.8)
+
+#after QC
+plot(assigned$score$G1[!scdata$drop], assigned$score$G2M[!scdata$drop], col=as.numeric(as.factor(phase)[!scdata$drop]), pch=16)
+legend("topright", legend=levels(as.factor(phase)), fill=cc, cex=0.8)
+```
+
+```{r GENE filtering}
+filter_genes <- apply(counts(scdata[ , !colData(scdata)$drop]), 1, 
+                      function(x) length(x[x > 1]) >= dim(scdata)[2]*0.05)
+rowData(scdata)$use <- filter_genes
+
+QC <- scdata[rowData(scdata)$use, !colData(scdata)$drop]
+data.frame(ByLibSize=sum(drop.n.reads),ByMapping=sum(drop.pct.mapped),
+           ByFeature=sum(drop.n.genes),ByMito=sum(drop.pct.mt), 
+           BySpike=sum(drop.pct.ercc),ByControl=sum(drop.control),
+           Bycontamination=sum(drop.contamination),Remaining=ncol(QC))
+dim(QC)
+
+#add cell cycle info
+colData(QC)$cell_cycle<-assigned$phases[!scdata$drop]
+colData(QC)$specificity_phases<-paste(QC$cell_specificity,assigned$phases[!scdata$drop],sep = "_")
+```
+
+#scone.R to get out_norm
+```{r scone.R to get out_norm}
+out_norm<-read.delim(file="~/Documents/sc_2018/scone_norm_jul.txt",header = T, ###############scone_norm1.txt
+                     sep = "\t",row.names=1,check.names=FALSE)
+out_norm<-out_norm[rownames(out_norm)%in%rownames(QC),colnames(out_norm)%in%colnames(QC)]
+QC <- QC[match(rownames(out_norm), rownames(QC)),]#???????
+assay(QC, "lognorm") <- as.matrix(log2(out_norm+1))
+```
+
+```{r plot before and after normalization}
+par(mfrow=c(2,2), mar=c(2.1, 1.1, 0.1, 0.1))
+endog_genes <- !rowData(QC)$is_feature_control
+plotPCA(
+  QC[endog_genes, ],
+  exprs_values = "logcounts_raw",
+  shape_by = "source",
+  colour_by = "patient",
+  size_by = "total_features"
+)
+plotPCA(
+  QC[endog_genes, ],
+  exprs_values = "logcounts_raw",
+  shape_by = "source",
+  colour_by = "cell_specificity",
+  size_by = "total_features"
+)
+plotPCA(
+  QC[endog_genes, ],
+  exprs_values = "lognorm",
+  shape_by = "source",
+  colour_by = "patient",
+  size_by = "total_features"
+)
+plotPCA(
+  QC[endog_genes, ],
+  exprs_values = "lognorm",
+  shape_by = "source",
+  colour_by = "cell_specificity",
+  size_by = "total_features"
+)
+# tind<-which(colData(QC)$cell_type=="T")
+# plotPCA(
+#   QC[endog_genes, tind],
+#   exprs_values = "lognorm",
+#   shape_by = "source",
+#   colour_by = "cell_specificity",
+#   size_by = "total_features"
+# )
+```
+
+#load bulk data
+```{r load bulk data}
+# bulk_down<-read.table(file = "/Users/yingy_adm/Documents/sc_2018/bulk_result/de_genes.csv",header = T, sep = ",")
+# bulk_up<-read.table(file = "/Users/yingy_adm/Documents/sc_2017/Cytof_and_bulk_RNA-seq_results/DE_CeD_tet+_up.csv",header = T, sep = ",")
+bulk_blood<-read.table(file = "/Users/yingy_adm/Documents/sc_2018/bulk_result/de_genes.csv",header = T, sep = ",")
+bulk_gut<-read.table(file = "/Users/yingy_adm/Documents/sc_2018/bulk_result/DE_tetp_vs_tetn.csv",header = T, sep = ",")
+#bulk_down$gene_name=as.character(bulk_down$gene_name)
+#bulk_up$gene_name=as.character(bulk_up$gene_name)
+bulk_blood$gene_name=as.character(bulk_blood$gene_name)
+bulk_gut$gene_name=as.character(bulk_gut$gene_name)
+```
+
+#plot of mean expressions in specific vs non-specific T cells
+```{r scatter plot of mean expressions in specific vs non-specific T cells}
+expr_T_df<-data.frame(mean_specific_T = rowMeans(out_norm[,which(colData(QC)$cell_specificity=="Tet+T")]),
+                      mean_non_specific_T=rowMeans(out_norm[,which(colData(QC)$cell_specificity=="Tet-T")]),
+                      row.names = rownames(QC))
+  
+ggplot(expr_T_df,aes(y = mean_specific_T, x = mean_non_specific_T)) + geom_point(colour = "black", size = 0.5)+
+#geom_point(data=subset(expr_T_df,rownames(expr_T_df)%in%bulk_up$gene_name),colour="red",size = 0.5)+
+#geom_point(data=subset(expr_T_df,rownames(expr_T_df)%in%bulk_down$gene_name),colour="blue",size = 0.5)
+geom_point(data=subset(expr_T_df,rownames(expr_T_df)%in%bulk_blood$gene_name[bulk_blood$logFC>0]),colour="red",size = 0.5)+
+geom_point(data=subset(expr_T_df,rownames(expr_T_df)%in%bulk_blood$gene_name[bulk_blood$logFC<0]),colour="blue",size = 0.5)
+
+#plot on log scale
+n_expr_T_df <- log2(expr_T_df+1)
+ggplot(n_expr_T_df,aes(y = mean_specific_T, x = mean_non_specific_T)) + geom_point(colour = "black", size = 0.5)+
+  geom_point(data=subset(n_expr_T_df,rownames(n_expr_T_df)%in%bulk_blood$gene_name[bulk_blood$logFC>0]),colour="red",size = 1)+
+  geom_point(data=subset(n_expr_T_df,rownames(n_expr_T_df)%in%bulk_blood$gene_name[bulk_blood$logFC<0]),colour="blue",size = 1)
+
+#plot on Gut AND Blood separately
+expr_T_df_gut<-data.frame(mean_specific_T = rowMeans(out_norm[,which(colData(QC)$cell_specificity=="Tet+T" &
+                                                                   colData(QC)$source=="Gut")]),
+                      mean_non_specific_T=rowMeans(out_norm[,which(colData(QC)$cell_specificity=="Tet-T" &
+                                                                     colData(QC)$source=="Gut")]),
+                      row.names = rownames(QC))
+n_expr_T_df_gut <- log2(expr_T_df_gut+1)
+ggplot(n_expr_T_df_gut,aes(y = mean_specific_T, x = mean_non_specific_T)) + geom_point(colour = "black", size = 0.5)+
+  geom_point(data=subset(n_expr_T_df_gut,rownames(n_expr_T_df_gut)%in%bulk_up$gene_name),colour="red",size = 1)+
+  geom_point(data=subset(n_expr_T_df_gut,rownames(n_expr_T_df_gut)%in%bulk_down$gene_name),colour="blue",size = 1)
+
+expr_T_df_blood<-data.frame(mean_specific_T = rowMeans(out_norm[,which(colData(QC)$cell_specificity=="Tet+T" &
+                                                                   colData(QC)$source=="Blood")]),
+                      mean_non_specific_T=rowMeans(out_norm[,which(colData(QC)$cell_specificity=="Tet-T" &
+                                                                     colData(QC)$source=="Blood")]),
+                      row.names = rownames(QC))
+n_expr_T_df_blood <- log2(expr_T_df_blood+1)
+ggplot(n_expr_T_df_blood,aes(y = mean_specific_T, x = mean_non_specific_T)) + geom_point(colour = "black", size = 0.5)+
+  geom_point(data=subset(n_expr_T_df_blood,rownames(n_expr_T_df_blood)%in%bulk_up$gene_name),colour="red",size = 1)+
+  geom_point(data=subset(n_expr_T_df_blood,rownames(n_expr_T_df_blood)%in%bulk_down$gene_name),colour="blue",size = 1)
+```
+
+#tSNE plot to show all clone types in one
+```{r view clonetype in tSNE plot}
+endog_genes <- !rowData(QC)$is_feature_control
+tind<-which(colData(QC)$cell_type=="T")
+plotTSNE(QC[endog_genes, tind], rand_seed = 1, ncomponents = 2,
+         exprs_values = "lognorm", shape_by = "source", colour_by ="clonetype",
+         size_by = "total_features", 
+         perplexity = 20)
+```
+
+#tSNE plot to show each clone types separately
+#M3,M4,M14
+```{r view clonetype in tSNE plot}
+endog_genes <- !rowData(QC)$is_feature_control
+tind<-which(colData(QC)$cell_type=="T")
+plotTSNE(QC[endog_genes, tind], rand_seed = 1, ncomponents = 2,
+         exprs_values = "lognorm", shape_by = "cell_specificity", colour_by ="L1",
+         perplexity = 20)
+plotTSNE(QC[endog_genes, tind], rand_seed = 1, ncomponents = 2,
+         exprs_values = "lognorm", shape_by = "cell_specificity", colour_by ="L2",
+         perplexity = 20)
+plotTSNE(QC[endog_genes, tind], rand_seed = 1, ncomponents = 2,
+         exprs_values = "lognorm", shape_by = "cell_specificity", colour_by ="L3",
+         perplexity = 20)
+plotTSNE(QC[endog_genes, tind], rand_seed = 1, ncomponents = 2,
+         exprs_values = "lognorm", shape_by = "cell_specificity", colour_by ="M1",
+         perplexity = 20)
+plotTSNE(QC[endog_genes, tind], rand_seed = 1, ncomponents = 2,
+         exprs_values = "lognorm", shape_by = "cell_specificity", colour_by ="M2",
+#         size_by = "total_features", 
+         perplexity = 20)
+plotTSNE(QC[endog_genes, tind], rand_seed = 1, ncomponents = 2,
+         exprs_values = "lognorm", shape_by = "cell_specificity", colour_by ="M5",
+         perplexity = 20)
+plotTSNE(QC[endog_genes, tind], rand_seed = 1, ncomponents = 2,
+         exprs_values = "lognorm", shape_by = "cell_specificity", colour_by ="M6",
+         perplexity = 20)
+plotTSNE(QC[endog_genes, tind], rand_seed = 1, ncomponents = 2,
+         exprs_values = "lognorm", shape_by = "cell_specificity", colour_by ="M9",
+         perplexity = 20)
+plotTSNE(QC[endog_genes, tind], rand_seed = 1, ncomponents = 2,
+         exprs_values = "lognorm", shape_by = "cell_specificity", colour_by ="M10",
+         perplexity = 20)
+plotTSNE(QC[endog_genes, tind], rand_seed = 1, ncomponents = 2,
+         exprs_values = "lognorm", shape_by = "cell_specificity", colour_by ="M11",
+         perplexity = 20)
+
+plotTSNE(QC[endog_genes, tind], rand_seed = 1, ncomponents = 2,
+         exprs_values = "lognorm", shape_by = "cell_specificity", colour_by ="M16",
+         perplexity = 20)
+
+plotTSNE(QC[endog_genes, tind], rand_seed = 1, ncomponents = 2,
+         exprs_values = "lognorm", shape_by = "cell_specificity", colour_by ="M18",
+         perplexity = 20)
+```
+
+#correlation between cells with the same clonetype
+```{r correlation between cells with the same clonetype}
+clone_freq2<-as.data.frame(table(QC$clonetype))
+uni_clone<-as.character(clone_freq2$Var1[clone_freq2$Freq>1 & clone_freq2$Freq<100])
+
+library(gtools)
+corr_mat<-data.frame(corr=rep(NA,length(uni_clone)),row.names = uni_clone) #unique(QC$clonetype[tind])[3:26])
+tind<-which(colData(QC)$cell_type=="T")
+tr_gene_name<-rownames(gene_biotype)[tr_gene]
+tr_id_norm<-which(rownames(out_norm)%in%tr_gene_name)
+for (c in rownames(corr_mat))
+  {
+    ind=which(QC$clonetype[tind]==c)
+    print(c)
+    print(QC$well[tind][ind])
+    print(QC$source[tind][ind])
+    print(QC$patient[tind][ind])
+    print(QC$cell_specificity[tind][ind])
+    pairs = combinations(n = length(ind), r = 2, v = as.character(QC$well[tind][ind]))
+    pairs = as.data.frame(pairs)
+    pairs$corr = 0
+    for (r in 1:nrow(pairs))
+  {
+      cell1.expr = out_norm[-tr_id_norm,pairs[r,1]]
+      cell2.expr = out_norm[-tr_id_norm,pairs[r,2]]
+      cell_cell_corr = cor(cell1.expr,cell2.expr)
+      pairs$corr[r] = cell_cell_corr
+    }
+    corr_mat[c,] = sum(pairs$corr)/nrow(pairs)
+  }
+print(corr_mat)
+```
+#correlation between random cells
+```{r correlation between 2 random cells}
+#ind1 = which(QC$clonetype[tind]!="N"|QC$patient[tind]=="CD1507") 
+ind1 = which(QC$clonetype!="N" & QC$patient=="CD1507" & QC$cell_specificity=="Tet+T")
+ind2 = which(QC$clonetype!="N" & QC$patient=="CD1517" & QC$cell_specificity=="Tet+T")
+ind3 = which(QC$clonetype!="N" & QC$patient=="CD1570" & QC$cell_specificity=="Tet+T")
+ind4 = which(QC$clonetype!="N" & QC$patient=="CD1615" & QC$cell_specificity=="Tet+T")
+corr<-rep(NA,400)
+for (i in 1:100){
+  #random_pair = sample(x = QC$well[tind][ind1], size = 2)
+  random_pair = sample(x = as.character(QC$well[ind1]), size = 2)
+  cell1.expr = out_norm[-tr_id_norm,random_pair[1]]
+  cell2.expr = out_norm[-tr_id_norm,random_pair[2]]
+  cell_cell_corr = cor(cell1.expr,cell2.expr)
+  corr[i] = cell_cell_corr
+}
+for (i in 101:200){
+  random_pair = sample(as.character(x = QC$well[ind2]), size = 2)
+  cell1.expr = out_norm[-tr_id_norm,random_pair[1]]
+  cell2.expr = out_norm[-tr_id_norm,random_pair[2]]
+  cell_cell_corr = cor(cell1.expr,cell2.expr)
+  corr[i] = cell_cell_corr
+}
+for (i in 201:300){
+  random_pair = sample(x = as.character(QC$well[ind3]), size = 2)
+  cell1.expr = out_norm[-tr_id_norm,random_pair[1]]
+  cell2.expr = out_norm[-tr_id_norm,random_pair[2]]
+  cell_cell_corr = cor(cell1.expr,cell2.expr)
+  corr[i] = cell_cell_corr
+}
+for (i in 301:400){
+  random_pair = sample(x = as.character(QC$well[ind4]), size = 2)
+  cell1.expr = out_norm[-tr_id_norm,random_pair[1]]
+  cell2.expr = out_norm[-tr_id_norm,random_pair[2]]
+  cell_cell_corr = cor(cell1.expr,cell2.expr)
+  corr[i] = cell_cell_corr
+}
+random_corr = as.data.frame(corr)
+summary(random_corr)
+```
+
+#box plot to compare the correlations above
+```{r box plot to compare the correlations}
+corr_mat$clonetype = 'same_clonetype'
+random_corr$clonetype = 'random_clonetype'
+clonetype_corr = rbind(corr_mat,random_corr)
+ggplot(data=clonetype_corr, aes(x=clonetype, y=corr)) + 
+  geom_boxplot()
+t.test(corr_mat$corr,random_corr$corr)
+```
+
+#hurdle_modle.R using MAST
+```{r scone.R to get out_norm}
+library(MAST)
+library(scater)
+library(data.table)
+### Hurdle model fitting 
+# ZLM (ridge regression for continuous, get standardized deviance residuals)
+tind<-which(colData(QC)$cell_type=="T")
+fData = data.frame(primerid=rownames(out_norm),biotype=rowData(QC)$biotype)#,genefamily=rowData(QC)$gene_family)
+rownames(fData) = rownames(out_norm)
+source<-factor(colData(QC)$source[tind])
+source<-relevel(source,"Blood")
+specificity<-factor(colData(QC)$specificity[tind])
+specificity<-relevel(specificity,"Tet-T")
+patient<-factor(colData(QC)$patient[tind])
+
+#clone_exp<-factor(clone_exp[clone_exp!="N"])
+#clone_exp<-relevel(clone_exp,"F")
+
+#cell_specificity?
+cData = data.frame(wellKey=QC$well[tind],source=source,specificity=specificity,patient=patient)
+rownames(cData) = colnames(out_norm)[tind]
+
+obj2 <- FromMatrix(as.matrix(log2(out_norm[,tind]+1)), cData, fData)
+colData(obj2)$cngeneson <- scale(colSums(assay(obj2)>0))
+#l_exp<-QC$clone_exp[tind]!="N"
+#obj_exp<-obj2[,l_exp]
+
+#zlm_exp<-zlm(~source + specificity + patient + cngeneson + clone_exp, obj_exp)
+
+zlm2 <- zlm(~source + specificity + patient + cngeneson, obj2, method = "bayesglm", 
+            ebayes = TRUE, ebayesControl = list(method = "MLE", model = "H1"))
+
+#function for likelihood ratio test(zlm,factor_tested='specificitySpecific',p=0.05)
+lrt_sig<-function(zlm,factor_tested)#,p=0.05)
+  {
+  summarymat <- summary(zlm, doLRT=factor_tested)
+  summarymat <- summarymat$datatable
+  fcHurdle <- merge(summarymat[contrast==factor_tested & component=='H',.(primerid, `Pr(>Chisq)`)], #hurdle P values
+                    summarymat[contrast==factor_tested & component=='logFC', .(primerid, coef, ci.hi, ci.lo)], by='primerid') #logFC coefficients
+  return (fcHurdle)#[,fdr:=p.adjust(`Pr(>Chisq)`, 'fdr')]
+  #fcHurdleSig <- merge(fcHurdle[fdr<p], as.data.table(mcols(obj2)), by='primerid')
+  #return (setorder(fcHurdleSig, fdr)) 
+}
+#run testing function and save the DEG results
+fcHurdle.source<-lrt_sig(zlm2,factor_tested='sourceGut')#,p=0.05)
+fcHurdle.spe<-lrt_sig(zlm2,factor_tested='specificityTet+T')#,p=0.05)
+#fcHurdle.exp<-lrt_sig(zlm_exp,factor_tested='clone_expM')#,p=0.05)
+
+FCTHRESHOLD <- log2(1.5)
+
+fcHurdle.source[,fdr:=p.adjust(`Pr(>Chisq)`, 'fdr')]
+fcHurdleSig.source <- merge(fcHurdle.source[fdr<.05 & abs(coef)>FCTHRESHOLD], as.data.table(mcols(obj2)), by='primerid')
+setorder(fcHurdleSig.source, fdr)
+
+fcHurdle.spe[,fdr:=p.adjust(`Pr(>Chisq)`, 'fdr')]
+fcHurdleSig.spe <- merge(fcHurdle.spe[fdr<.05 & abs(coef)>FCTHRESHOLD], as.data.table(mcols(obj2)), by='primerid')
+setorder(fcHurdleSig.spe, fdr)#fdr<.05:304,fdr<.01:215,cutoff:135
+
+# fcHurdle.exp[,fdr:=p.adjust(`Pr(>Chisq)`, 'fdr')]
+# fcHurdleSig.exp <- merge(fcHurdle.exp[fdr<.05 & abs(coef)>FCTHRESHOLD], as.data.table(mcols(obj_exp)), by='primerid')
+# setorder(fcHurdleSig.exp, fdr)
+```
+
+```{r save result}
+write.table(fcHurdleSig.source$primerid,"/Users/yingy_adm/Documents/sc_2018/DEG_source_jul.txt",col.names = F,row.names = F,quote = F)
+write.table(gene_biotype[fcHurdleSig.source$primerid,]$gene_id,"/Users/yingy_adm/Documents/sc_2018/DEGid_source_jul.txt",col.names = F,row.names = F,quote = F)
+write.table(fcHurdleSig.spe$primerid,"/Users/yingy_adm/Documents/sc_2018/DEG_spe_jul.txt",col.names = F,row.names = F,quote = F)
+write.table(gene_biotype[fcHurdleSig.spe$primerid,]$gene_id,"/Users/yingy_adm/Documents/sc_2018/DEGid_spe_jul.txt",col.names = F,row.names = F,quote = F)
+```
+
+#volcano plot
+```{r scone.R to get out_norm}
+colnames(fcHurdle.spe)<-c("primerid","pvalue","logFC","CI_high","CI_low","FDR")
+df <- data.frame(primerid=fcHurdle.spe$primerid,logFC=fcHurdle.spe$logFC,adjusted_P=fcHurdle.spe$FDR)
+library(ggplot2)
+library(ggrepel)
+pdf("/Users/yingy_adm/Documents/sc_2018/plots/volcano_allCells_bulkBlood_Label.pdf",height=9,width=19)
+ggplot(data = df, aes(x = logFC, y = -log2(adjusted_P), label = primerid)) + theme_bw()+
+geom_point(colour = "black", size = 0.5) +
+#geom_point(data=subset(df,primerid%in%bulk_up$gene_name),colour="red",size = 0.5)+
+#geom_point(data=subset(df,primerid%in%bulk_down$gene_name),colour="green",size = 0.5)+
+geom_point(data=subset(df,primerid%in%bulk_blood$gene_name[bulk_blood$logFC>0]),colour="red",size = 0.5)+
+geom_point(data=subset(df,primerid%in%bulk_blood$gene_name[bulk_blood$logFC<0]),colour="green",size = 0.5)+
+geom_text(data = subset(df, adjusted_P<.01 & abs(logFC)>log2(2)),size=2)+
+geom_hline(yintercept = 4.321928,colour="grey")+#-log2(0.05)
+geom_vline(xintercept=-0.5849625,colour="grey")+#log2(1.5)
+geom_vline(xintercept=0.5849625,colour="grey")+
+ggtitle("DEA using all cells labeled with DEG_bulk_blood")
+dev.off()
+```
+```{r scatter plot for logFC comparing with bulk data}
+MAST_logFC=fcHurdle.spe[fcHurdle.spe$primerid%in%c(bulk_down$gene_name,bulk_up$gene_name),c(1,3)]
+bulk_LogFC=rbind(bulk_down,bulk_up)[,c(1,3)]
+LogFC=merge(MAST_logFC,bulk_LogFC,by.x="primerid",by.y="gene_name")
+colnames(LogFC)<-c("gene_name","MAST_logFC","bulk_LogFC")
+ggplot(LogFC,aes(y = MAST_logFC, x = bulk_LogFC)) + geom_point(colour = "black", size = 0.5)+
+  geom_point(data=subset(LogFC,LogFC$gene_name%in%bulk_up$gene_name),colour="red",size = 1)+
+  geom_point(data=subset(LogFC,LogFC$gene_name%in%bulk_down$gene_name),colour="blue",size = 1)+
+  geom_vline(xintercept=0,colour="grey")+
+  geom_hline(yintercept=0,colour="grey")
+```
+#Visualization of 50 most differentially expressed genes
+```{r violin plot for top20 DEG for source}
+colnames(fcHurdle.source)<-c("primerid","pvalue","logFC","CI_high","CI_low")
+fcHurdleSig.source <- subset(fcHurdle.source,pvalue<0.05)
+smat.source<-fcHurdleSig.source[!is.na(fcHurdleSig.source$logFC),]
+smat.source <- smat.source[order(pvalue),] 
+upid.source<-which(smat.source$logFC>0)[1:20]
+downid.source<-which(smat.source$logFC<0)[1:20]
+up.genes.source <- fcHurdleSig.source[upid.source,primerid]
+down.genes.source <- fcHurdleSig.source[downid.source,primerid]
+up.dat.source  <- as(obj2[up.genes.source,], 'data.table')
+down.dat.source  <- as(obj2[down.genes.source,], 'data.table')
+
+#"/Users/yingy_adm/Documents/sc_2018/violin_source_up.pdf"
+gg_up <- ggplot(up.dat.source, aes(x=source,y=value,color=source)) + geom_jitter()+facet_wrap(~primerid, scale='free_y')+ggtitle("DE Genes in Gut and Blood")
+gg_up+geom_violin()
+
+#"/Users/yingy_adm/Documents/sc_2018/violin_source_down.pdf"
+gg_down <- ggplot(up.dat.source, aes(x=source,y=value,color=source)) + geom_jitter()+facet_wrap(~primerid, scale='free_y')+ggtitle("DE Genes in Gut and Blood")
+gg_down+geom_violin()
+```
+
+```{r violin plot for top20 DEG for specificity}
+colnames(fcHurdle.spe)<-c("primerid","pvalue","logFC","CI_high","CI_low")
+fcHurdleSig.spe <- subset(fcHurdle.spe,pvalue<0.05)
+smat.spe<-fcHurdleSig.spe[!is.na(fcHurdleSig.spe$logFC),]
+upid.spe<-which(smat.spe$logFC>0)[1:12]
+downid.spe<-which(smat.spe$logFC<0)[1:12]
+up.genes.spe <- fcHurdleSig.spe[upid.spe,primerid]
+down.genes.spe <- fcHurdleSig.spe[downid.spe,primerid]
+up.dat.spe <- as(obj2[up.genes.spe,], 'data.table')
+down.dat.spe <- as(obj2[down.genes.spe,], 'data.table')
+
+#"/Users/yingy_adm/Documents/sc_2018/violin_spe_up.pdf"
+gg_up.spe <- ggplot(up.dat.spe, aes(x=specificity,y=value,color=specificity)) + geom_jitter()+facet_wrap(~primerid, scale='free_y')+ggtitle("DE Genes in tet+ vs tet- T Cells")
+gg_up.spe+geom_violin()
+
+#"/Users/yingy_adm/Documents/sc_2018/violin_spe_down.pdf"
+gg_down.spe <- ggplot(up.dat.spe, aes(x=specificity,y=value,color=specificity)) + geom_jitter()+facet_wrap(~primerid, scale='free_y')+ggtitle("DE Genes in tet+ vs tet- T Cells")
+gg_down.spe+geom_violin() 
+
+#"/Users/yingy_adm/Documents/sc_2018/model_fit.pdf"
+up.dat.spe[,lmPred:=lm(value~source + specificity + patient + cngeneson)$fitted, key=primerid]
+gg_up.spe +aes(x=cngeneson) + geom_line(aes(y=lmPred), lty=1) + xlab('Standardized Cellular Detection Rate')
+```
+
+heatmap of top 20 DEG by MAST
+```{r heatmap of top 20 DEG}
+library(ggridges)
+DEG_heatmap<-function(data_obj,genes,factor,level1,level2,plotmain,outfile){
+  mat<-log2(assay(data_obj[genes,])+1)
+  poscol<-which(colSums(mat)>0)
+  mat<-mat[,poscol]
+  rownames(mat) <- genes
+  mat_1 = mat[,cData[,factor][poscol]==level1]
+  mat_2 = mat[,cData[,factor][poscol]==level2]
+  hr <- hclust(as.dist(1-cor(t(mat), method="pearson")), method="complete")
+  hc_1 <- hclust(as.dist(1-cor(mat_1, method="pearson")), method="complete")
+  hc_2 <- hclust(as.dist(1-cor(mat_2, method="pearson")), method="complete")
+  order_col<-c(colnames(mat)[cData[,factor][poscol]==level1][hc_1$order],
+               colnames(mat)[cData[,factor][poscol]==level2][hc_2$order]) 
+  #heatmap plottting
+  pdf(outfile,height=10,width=20)
+  gplots::heatmap.2(
+    mat[,order_col],
+    Colv=FALSE,
+    #scale = "row",
+    colsep = length(hc_1$order)+1,
+    sepcolor = "black",
+    dendrogram="none",
+    main=plotmain,
+    trace="none",margin=c(4,6),
+    labCol = obj2$factor,
+    col=colorRampPalette(c("white","red")))
+  dev.off()
+}
+
+
+DEG_heatmap(data_obj=obj2,genes=c(up.genes.source,down.genes.source),factor="source",
+            level1="Blood",level2="Gut",plotmain="DE genes in Gut vs Blood",
+            outfile="/Users/yingy_adm/Documents/sc_2018/heatmap_source_may.pdf")
+
+DEG_heatmap(data_obj=obj2,genes=fcHurdleSig.spe$primerid,factor="specificity",
+            level1="Non",level2="Specific",plotmain="DE genes in Tet+ vs Tet- T cells",
+            outfile="/Users/yingy_adm/Documents/sc_2018/heatmap_specific_may.pdf")
+```
+
+```{r function for DEG Histograme}
+##type={"density","multi","violin"}
+plot_DEGexpr_2group<-function(gene_name,group_by="specificity",expression,type="density"){
+ tind<-QC$cell_type=="T"
+ if (expression=="tpm"){
+   expr<-tpm(QC)[gene_name,tind]
+ }else{#normalized
+   expr<-out_norm[gene_name,tind] 
+ }
+ if (group_by=="specificity"){
+   group<-QC$specificity[tind] 
+ }else if(group_by=="source"){
+   group<-QC$source[tind] 
+ }else if(group_by=="clone_exp"){
+   group<-QC$clone_exp[tind] 
+ }
+ if(group_by%in%c("specificity","source","clone_exp")){
+    df<-data.frame(expr=as.numeric(expr),group=group)
+    df$expr[df$expr==0]<-0.1
+ }
+
+ if(group_by=="specificity_phases"){
+   #cc<-QC$cell_cycle[tind]
+   cc<-QC$cell_cycle_seurat[tind]
+   spe<-QC$specificity[tind]
+   df<-data.frame(expr=as.numeric(expr),cell_cycle=cc,specificity=spe)
+   df$expr[df$expr==0]<-0.1
+ }
+ 
+if (type=="density"){
+  p<- ggplot(data=df,aes(x=expr,fill = group))+  
+  geom_density(position="identity",alpha=.5,binwidth = .1)+
+  labs(x="log10_norm_expression", y="density")+
+  scale_x_log10()+
+  ggtitle(paste(gene_name,expression,sep = "_"))
+  p }
+ else if(type=="multi"){
+  p<- ggplot(data=df,aes(x=expr,y=cell_cycle,fill=specificity))+
+   geom_density_ridges(position="identity",alpha=.5,scale=1)+
+   labs(x="log10_norm_expression", y="density")+
+   scale_x_log10()+
+   ggtitle(paste(gene_name,expression,sep = "_"))
+  p}
+ else if(type=="violin"){
+    p <- ggplot(data=df, aes(x=group,y=expr,colors=group))+geom_jitter()+
+      ggtitle(paste0("expression of ",gene_name," grouped by ",group_by))
+    p+geom_violin()}
+}
+```
+
+```{r plot DEG density}    
+p1<-plot_DEGexpr_2group(gene_name="SELL",group_by="specificity",expression="norm",type = "density")
+#p1.1<-plot_DEGexpr_2group(gene_name="SELL",group_by="specificity",expression="tpm") 
+p1.1<-plot_DEGexpr_2group(gene_name="SELL",group_by="specificity_phases",expression="norm",type = "multi")
+p2<-plot_DEGexpr_2group(gene_name="LIMS4",group_by="specificity",expression="norm")
+#p2.1<-plot_DEGexpr_2group(gene_name="LIMS4",group_by="specificity",expression="tpm")
+p2.1<-plot_DEGexpr_2group(gene_name="LIMS4",group_by="specificity_phases",expression="norm",type = "multi")
+p3<-plot_DEGexpr_2group(gene_name="KLRB1",group_by="specificity",expression="norm")
+#p3.1<-plot_DEGexpr_2group(gene_name="KLRB1",group_by="specificity",expression="tpm")
+p3.1<-plot_DEGexpr_2group(gene_name="KLRB1",group_by="specificity_phases",expression="norm",type = "multi")
+p4<-plot_DEGexpr_2group(gene_name="ITM2A",group_by="specificity",expression="norm")
+#p4.1<-plot_DEGexpr_2group(gene_name="ITM2A",group_by="specificity",expression="tpm") 
+p4.1<-plot_DEGexpr_2group(gene_name="ITM2A",group_by="specificity_phases",expression="norm",type = "multi")
+
+p5<-plot_DEGexpr_2group(gene_name="AC108938.5",group_by="specificity",expression="norm")
+#p5.1<-plot_DEGexpr_2group(gene_name="AC108938.5",group_by="specificity",expression="tpm") 
+p5.1<-plot_DEGexpr_2group(gene_name="AC108938.5",group_by="specificity_phases",expression="norm",type = "multi")
+
+p6<-plot_DEGexpr_2group(gene_name="LIMS1",group_by="specificity",expression="norm")
+p6.1<-plot_DEGexpr_2group(gene_name="LIMS1",group_by="specificity",expression="tpm") 
+p6.1<-plot_DEGexpr_2group(gene_name="LIMS1",group_by="specificity_phases",expression="norm",type = "multi")
+
+p7<-plot_DEGexpr_2group(gene_name="ITGA4",group_by="specificity",expression="norm")
+p7.1<-plot_DEGexpr_2group(gene_name="ITGA4",group_by="specificity",expression="tpm") 
+p7.1<-plot_DEGexpr_2group(gene_name="ITGA4",group_by="specificity_phases",expression="norm",type = "multi")
+
+p8<-plot_DEGexpr_2group(gene_name="CXCR4",group_by="specificity",expression="norm")
+p8.1<-plot_DEGexpr_2group(gene_name="CXCR4",group_by="specificity",expression="tpm") 
+p8.1<-plot_DEGexpr_2group(gene_name="CXCR4",group_by="specificity_phases",expression="norm",type = "multi")
+
+p9<-plot_DEGexpr_2group(gene_name="LIMS3",group_by="specificity",expression="norm")
+p9.1<-plot_DEGexpr_2group(gene_name="LIMS3",group_by="specificity",expression="tpm") 
+p9.1<-plot_DEGexpr_2group(gene_name="LIMS3",group_by="specificity_phases",expression="norm",type = "multi")
+
+p10<-plot_DEGexpr_2group(gene_name="CCR9",group_by="specificity",expression="norm")
+p10.1<-plot_DEGexpr_2group(gene_name="CCR9",group_by="specificity",expression="tpm")
+p10.1<-plot_DEGexpr_2group(gene_name="CCR9",group_by="specificity_phases",expression="norm",type = "multi")
+pdf("/Users/yingy_adm/Desktop/DEG_cc_seurat.pdf",height=50,width=13)
+multiplot(p1,p1.1,p2,p2.1,p3,p3.1,p4,p4.1,p5,p5.1,p6,p6.1,p7,p7.1,p8,p8.1,p9,p9.1,p10,p10.1,layout=matrix(c(1:20),ncol=2,byrow=TRUE))
+dev.off() 
+```
